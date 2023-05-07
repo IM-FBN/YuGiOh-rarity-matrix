@@ -29,6 +29,7 @@ For viewing the excel file ive found WPS Office quite comfortable, just make sur
 while marking all cells.
 -----------------------------------------------------------------------------------------------------------
 DISCLAIMER:
+
 Im quite new to programming and did this to reduce time while building decks ive testes online in a certain 
 rarity. However, since im not to experienced im glad for any code reviews or suggestions. 
 -----------------------------------------------------------------------------------------------------------
