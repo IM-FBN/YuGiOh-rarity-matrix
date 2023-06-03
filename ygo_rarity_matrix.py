@@ -72,6 +72,32 @@ def find_hits():
     hits.sort(key=lambda hit: hit["name"])
     return hits
 
+def parse_card_data(card_data):
+    """
+    Function to parse card data
+    """
+    # Create an empty data structure to store the results
+    result = {}
+
+    if "data" in card_data:
+        for info in card_data["data"]:
+            # Create an empty list to store the rarity values
+            rarities = {}
+
+            # Go through each element in the "card_sets" list
+            for card_set in info["card_sets"]:
+                # Add set code and price to the appropriate rarity list
+                rarity_list = rarities.setdefault(card_set["set_rarity"], [])
+                rarity_list.append(card_set["set_code"].split("-")[0] + " " + card_set["set_price"] + "$")
+
+            # Add the card name, type and the list of rarity values to the result
+            result.update({"name": info["name"], "type": info["frameType"], "rarity": rarities})
+
+    else:
+        print(card_data)
+        print("No data in card_data")
+    
+    return result
 def decklist_request(decklist):
     """
     Function to request decklist from the API
