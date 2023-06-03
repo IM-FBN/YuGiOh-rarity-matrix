@@ -225,9 +225,6 @@ def data_to_excel(parsed_data, full_report=FULL_REPORT, alternate_bg_color=ALTER
     return "saved"
 
 
-
-
-
 def main():
     decklist = []
 
