@@ -1,207 +1,177 @@
-import requests
-import json
-from openpyxl import Workbook
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import Alignment
 import os
-from openpyxl.styles import PatternFill
-from openpyxl.styles import Border, Side
+import json
+import requests
 import sqlite3
 from pathlib import Path
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Alignment, PatternFill, Border, Side
 
+# Constants
+COMMON_LIMIT = 3
+FULL_REPORT = 1
+ALTERNATE_BG_COLOR = 1
+DB_DIR = str(Path.cwd()) + os.sep + "expansions"
 
-COMMON_LIMIT = 3        # Sets a maxiumum of common cards 
-FULL_REPORT=1           # if disabled only the raritys C,R,SR,UR,SCR, ULT are shown 
-DB_DIR = str(Path.cwd())+os.sep+"expansions" # place EDOPro expensions folder to current directory or specify path  
-
-
-#Some Comments are still in german language, i might change that some day
-
-
+# SQL Statement
+SELECT_STATEMENT = """
+    SELECT datas.id, datas.alias, texts.name 
+    FROM datas
+    INNER JOIN texts ON datas.id = texts.id 
+    WHERE instr(texts.name, '(GOAT)') OR instr(texts.name, '(Pre-Errata)')
+    ORDER BY texts.name
+"""
 
 def find_main(alt_id_list):
-    alt_id_list = [int(item) for item in alt_id_list]
-
-    main_id = []
-    SELECT_STATEMENT = """
-        SELECT datas.id, datas.alias, texts.name 
-        FROM datas
-        INNER JOIN texts ON datas.id = texts.id 
-        WHERE instr(texts.name, '(GOAT)') OR instr(texts.name, '(Pre-Errata)')
-        ORDER BY texts.name
     """
+    Function to find the main id from the alternate id list
+    """
+    alt_id_list = set(int(item) for item in alt_id_list)
+    hits = find_hits()
 
-    def find():
-        databases = sorted(os.listdir(DB_DIR))
-        databases = filter(lambda f: f.endswith(".cdb"), databases)
+    # Convert the JSON string into a list of dictionaries
+    cards = json.loads(json.dumps(hits, indent=4, ensure_ascii=False))
 
-
-        hits = []
-        encounteredIds = set()
-
-        for db in databases:
-            dbPath = (DB_DIR + os.sep +db)
-
-            with sqlite3.connect(dbPath) as con:
-                cursor = con.cursor()
-                cursor.execute(SELECT_STATEMENT)
-                rows = cursor.fetchall()
-                for row in rows:
-                    altId = row[0]
-                    mainId = row[1]
-                    name = row[2].strip()
-
-                    if altId in encounteredIds:
-                        continue
-
-                    _type = "Unknown"
-                    if "(GOAT)" in name:
-                        _type = "GOAT"
-                    elif "(Pre-Errata)" in name:
-                        _type = "Pre-Errata"
-
-                    hits.append({
-                        "alt_id": altId,
-                        "main_id": mainId,
-                        "type": _type,
-                        "name": name,
-                        "db": db
-                    })
-
-                    encounteredIds.add(altId)
-
-        def f(hit): return hit["name"]
-        hits.sort(key=f)
-
-        return hits
+    # Search the card list and output main_id if alt_id is in the list
+    return [str(card['main_id']) for card in cards if card['alt_id'] in alt_id_list]
 
 
-    if __name__ == "__main__":
-        hits = find()
-        cards = json.dumps(hits, indent=4, ensure_ascii=False)
+def find_hits():
+    """
+    Function to find hits from the databases
+    """
+    databases = sorted(filter(lambda f: f.endswith(".cdb"), os.listdir(DB_DIR)))
+    hits = []
+    encountered_ids = set()
 
+    for db in databases:
+        db_path = (DB_DIR + os.sep + db)
+        with sqlite3.connect(db_path) as con:
+            cursor = con.cursor()
+            cursor.execute(SELECT_STATEMENT)
+            rows = cursor.fetchall()
+            for row in rows:
+                alt_id, main_id, name = row
+                name = name.strip()
 
+                if alt_id in encountered_ids:
+                    continue
 
-    # Konvertiere den JSON-String in eine Liste von Dictionaries
-    cards = json.loads(cards)
+                _type = "GOAT" if "(GOAT)" in name else ("Pre-Errata" if "(Pre-Errata)" in name else "Unknown")
 
-    # Liste mit den alt_id-Nummern, die überprüft werden sollen
+                hits.append({
+                    "alt_id": alt_id,
+                    "main_id": main_id,
+                    "type": _type,
+                    "name": name,
+                    "db": db
+                })
 
-    # Durchsuche die Kartenliste und gibt main_id aus, falls alt_id in der Liste vorkommt
-    for card in cards:
-        if card['alt_id'] in alt_id_list:
-            main_id.append(str(card['main_id']))
-    return main_id
+                encountered_ids.add(alt_id)
+
+    hits.sort(key=lambda hit: hit["name"])
+    return hits
 
 def decklist_request(decklist):
-
+    """
+    Function to request decklist from the API
+    """
+    decklist = set(decklist)
     response_data = []
     error_list = []
-    decklist = set(decklist)
-    for id in decklist:
-        response = requests.get('https://db.ygoprodeck.com/api/v7/cardinfo.php?'+'id='+str(id))
-        response_json = response.json()
-        # Skip parsing if there was an error with the request
-        if "error" in response_json:
-            error_list.append(id)
-            continue
-        response_data.append(response_json)
 
-    
-    error_list = set(error_list)
+    def update_progress(current, total):
+        """
+        Function to update and print progress
+        """
+        if total - current < 4:
+            progress = 100.0
+        else:
+            progress = (current + 1) / total * 100
+        print(f"Progress: {progress:.2f}%")
+
+    total_cards = len(decklist)
+
+    for i, id in enumerate(decklist):
+        response = requests.get(f'https://db.ygoprodeck.com/api/v7/cardinfo.php?id={id}').json()
+        if "error" not in response:
+            response_data.append(response)
+        else:
+            #print(f"Error with card ID {id}: {response['error']}")
+            error_list.append(id)
+        
+        # Update progress every fourth card
+        if (i + 1) % 4 == 0:
+            update_progress(i, total_cards)
+
     main_id_list = find_main(error_list)
 
-    # List all files in the current directory
-    files = os.listdir(DB_DIR)
-
     # Check if any file has the extension ".cdb"
-    if any(file.endswith(".cdb") for file in files):
-        print(".cdb Files found")
-        for id in main_id_list:
-            response = requests.get('https://db.ygoprodeck.com/api/v7/cardinfo.php?'+'id='+str(id))
-            response_json = response.json()
+    if any(file.endswith(".cdb") for file in os.listdir(DB_DIR)):
+        print("\n.cdb Files found")
+        total_main_cards = len(main_id_list)
+        for i, id in enumerate(main_id_list):
+            response = requests.get(f'https://db.ygoprodeck.com/api/v7/cardinfo.php?id={id}').json()
             # Skip parsing if there was an error with the request
-            if "error" in response_json:
-                print("Error with card ID {}: {}".format(id, response_json["error"]))
-                error_list.append(id)
+            if "error" in response:
+                print(f"Error with card ID {id}: {response['error']}")
                 continue
-            response_data.append(response_json)
-
+            response_data.append(response)
+            
+            # Update progress every fourth card
+            if (i + 1) % 4 == 0:
+                update_progress(i, total_main_cards)
     else:
-        print("There are no .cdb files in the specified directory.")
-        #ERRORS IN NEUES TEXTFILE SCHREIBEN
+        print("\nThere are no .cdb files in the specified directory.")
+        # Write errors into a new text file
         print(error_list)
         with open("error_cards.ydk", "w") as file:
-            # Iteriere durch jede Karte in der error_list
+            # Iterate through each card in the error_list
             for card in error_list:
-                # Schreibe die Karte in die Datei
-                file.write(card + "\n")
-
+                # Write the card into the file
+                file.write(str(card) + "\n")
+    
     return response_data
 
 
-def parse_card_data(card_data):
-    # Erstelle eine leere Datenstruktur, um die Ergebnisse zu speichern
-    result = {}
+def data_to_excel(parsed_data, full_report=FULL_REPORT, alternate_bg_color=ALTERNATE_BG_COLOR):
+    """
+    Function to write parsed data to an Excel file
+    """
+    # Sort card data first by type and then by name
+    data_sorted = sorted(parsed_data, key=lambda card: (1 if card["type"].lower() in ["fusion", "synchro", "xyz", "link"] else 0, card["type"], card["name"]))
 
-    # Gehe durch jedes Element in der "data" Liste
-    for info in card_data["data"]:
-        # Erstelle eine leere Liste, um die Seltenheitswerte zu speichern
-        rarities = {}
-
-        # Gehe durch jedes Element in der "card_sets" Liste
-        for card_set in info["card_sets"]:
-            # Überprüfe, ob die Seltenheit bereits in der "rarities" Liste enthalten ist
-            if card_set["set_rarity"] not in rarities:
-                # Wenn nicht, füge sie der Liste hinzu
-                rarities[card_set["set_rarity"]] = [card_set["set_code"].split("-")[0]+" "+card_set["set_price"]+"$"]
-            else:
-                rarities[card_set["set_rarity"]].append(card_set["set_code"].split("-")[0]+" "+card_set["set_price"]+"$")
-
-        # Füge den Kartenname und die Liste der Seltenheitswerte dem Ergebnis hinzu
-        result.update({"name": info["name"], "rarity": rarities})
-
-    return result
-
-
-
-
-
-def data_to_excel(parsed_data, FULL_REPORT=1, ALTERNATE_BG_COLOR=True):
-    # Kartennamen alphabetisch sortieren
-    data_sorted = sorted(parsed_data, key=lambda card: card["name"])
-
-    # Spaltennamen für die Tabelle erstellen
+    # Create column names for the table
     rarities = ["Common", "Rare", "Super Rare", "Ultra Rare", "Secret Rare", "Ultimate Rare"]
-    if FULL_REPORT == 1:
+    if full_report:
         for card in data_sorted:
             for rarity in card["rarity"].keys():
                 if rarity not in rarities:
                     rarities.append(rarity)
-    column_names = ["Name"] + rarities
+    column_names = ["Type", "Name"] + rarities
 
-    # Excel-Arbeitsmappe erstellen
+    # Create Excel workbook
     workbook = Workbook()
     sheet = workbook.active
 
-    # Spaltennamen in die Tabelle schreiben
+    # Write column names into the table
     for i, name in enumerate(column_names):
-        cell = sheet.cell(row=1, column=i+1, value=name)
-        # Färbe jede zweite Spalte mit einer hellgrauen Hintergrundfarbe, wenn ALTERNATE_BG_COLOR=True
-        if ALTERNATE_BG_COLOR and i % 2 == 1:
+        cell = sheet.cell(row=1, column=i + 1, value=name)
+        # Color every other column with a light gray background color if alternate_bg_color is True
+        if alternate_bg_color and i % 2 == 1:
             fill = PatternFill(start_color='E3E3E3', end_color='E3E3E3', fill_type='solid')
             cell.fill = fill
 
-    # Daten in die Tabelle schreiben
-    #Fixiere die erste Spalte
-    sheet.freeze_panes = 'B2'
+    # Write data into the table
+    # Freeze the first column
+    sheet.freeze_panes = 'C2'
 
     for i, card in enumerate(data_sorted):
-        row = [card["name"]]
+        row = [card["type"], card["name"]]
         for j, rarity in enumerate(rarities):
             sets = card["rarity"].get(rarity, [])
             if rarity == "Common":
-                # Begrenze die Anzahl der Einträge für "Common"
+                # Limit the number of entries for "Common"
                 if len(sets) > COMMON_LIMIT:
                     row.append("\n".join(sets[:COMMON_LIMIT]) + "\n ({} weitere)".format(len(sets) - COMMON_LIMIT))
                 else:
@@ -216,14 +186,32 @@ def data_to_excel(parsed_data, FULL_REPORT=1, ALTERNATE_BG_COLOR=True):
             column_letter = get_column_letter(j+1)
             column_dimension = sheet.column_dimensions[column_letter]
             column_dimension.auto_size = True
-            max_length = 0
-            # Färbe jede zweite Spalte mit einer hellgrauen Hintergrundfarbe, wenn ALTERNATE_BG_COLOR=True
+            # Color every other column with a light gray background color if alternate_bg_color is True
             # Set top border of cell
             border = Border(top=Side(border_style="thin", color="000000"))
             cell.border = border
 
+            if j == 0:  # Column A
+                if value.lower() == "effect":
+                    cell.fill = PatternFill(start_color='FF8B53', end_color='FF8B53', fill_type='solid')
+                elif value.lower() == "spell":
+                    cell.fill = PatternFill(start_color='1D9E74', end_color='1D9E74', fill_type='solid')
+                elif value.lower() == "trap":
+                    cell.fill = PatternFill(start_color='BC5A84', end_color='BC5A84', fill_type='solid')
+                elif value.lower() == "fusion":
+                    cell.fill = PatternFill(start_color='A086B7', end_color='A086B7', fill_type='solid')
+                elif value.lower() == "ritual":
+                   cell.fill = PatternFill(start_color='9DB5CC', end_color='9DB5CC', fill_type='solid')
+                elif value.lower() == "synchro":
+                   cell.fill = PatternFill(start_color='CCCCCC', end_color='CCCCCC', fill_type='solid')
+                elif value.lower() == "normal":
+                   cell.fill = PatternFill(start_color='FDE68A', end_color='FDE68A', fill_type='solid')
+                elif value.lower() == "xyz":
+                   cell.fill = PatternFill(start_color='63666A', end_color='63666A', fill_type='solid')
+                elif value.lower() == "link":
+                   cell.fill = PatternFill(start_color='00008B', end_color='00008B', fill_type='solid')
 
-            if ALTERNATE_BG_COLOR and j % 2 == 1:
+            if alternate_bg_color and j % 2 == 1:
                 fill = PatternFill(start_color='E3E3E3', end_color='E3E3E3', fill_type='solid')
                 cell.fill = fill
 
@@ -232,26 +220,30 @@ def data_to_excel(parsed_data, FULL_REPORT=1, ALTERNATE_BG_COLOR=True):
         for cell in row:
             cell.alignment = Alignment(wrapText=True, horizontal="right", vertical="top")
 
-    # Excel-Datei speichern
+    # Save Excel file
     workbook.save("rarity_matrix.xlsx")
     return "saved"
 
-ALTERNATE_BG_COLOR=1
-decklist = []
-
-for file_name in os.listdir():
-    if file_name.endswith(".ydk"):
-        with open(file_name) as file:
-            for line in file:
-                entry = line.strip()
-                if entry[0].isdigit():
-                    decklist.append(entry)
 
 
-decklist_data = decklist_request(decklist)    
-parsed_data =[]
-for card_data in decklist_data:
-    parsed_data.append(parse_card_data(card_data))
-data_to_excel(parsed_data, FULL_REPORT, ALTERNATE_BG_COLOR)
-print("FILE CREATED - FINISHED")
-    
+
+
+def main():
+    decklist = []
+
+    for file_name in os.listdir():
+        if file_name.endswith(".ydk"):
+            with open(file_name) as file:
+                for line in file:
+                    entry = line.strip()
+                    if entry[0].isdigit():
+                        decklist.append(entry)
+
+    decklist_data = decklist_request(decklist)
+    parsed_data = [parse_card_data(card_data) for card_data in decklist_data]
+    data_to_excel(parsed_data, FULL_REPORT, ALTERNATE_BG_COLOR)
+    print("FILE CREATED - FINISHED")
+
+
+if __name__ == "__main__":
+    main()
